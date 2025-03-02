@@ -1,14 +1,40 @@
 import { App, TFile } from 'obsidian';
 import { ChatStore, createEmptyChatStore } from '../models/ChatModel';
 
-// File name where chat data will be stored
-const CHAT_DATA_FILENAME = '.obsidian/plugins/obsidian-threaded-chat/chat-data.json';
+// Filename paths
+const PLUGIN_DATA_FILENAME = '.obsidian/plugins/obsidian-threaded-chat/chat-data.json';
+const VAULT_DATA_FILENAME = '.chat-data.json';
+
+interface StorageSettings {
+    userName: string;
+    userId: string;
+    storageLocation: 'plugin' | 'vault';
+    // Add any other settings that affect storage
+}
 
 export class StorageService {
     private app: App;
+    private settings: StorageSettings;
     
-    constructor(app: App) {
+    constructor(app: App, settings: StorageSettings) {
         this.app = app;
+        this.settings = settings;
+    }
+    
+    /**
+     * Update settings
+     */
+    updateSettings(newSettings: StorageSettings) {
+        this.settings = newSettings;
+    }
+    
+    /**
+     * Get the appropriate filename based on settings
+     */
+    private getDataFilename(): string {
+        return this.settings.storageLocation === 'vault' 
+            ? VAULT_DATA_FILENAME 
+            : PLUGIN_DATA_FILENAME;
     }
     
     /**
@@ -17,7 +43,8 @@ export class StorageService {
     async saveChatStore(store: ChatStore): Promise<void> {
         try {
             const serializedData = JSON.stringify(store, null, 2);
-            await this.app.vault.adapter.write(CHAT_DATA_FILENAME, serializedData);
+            const filename = this.getDataFilename();
+            await this.app.vault.adapter.write(filename, serializedData);
         } catch (error) {
             console.error('Failed to save chat store:', error);
             throw error;
@@ -29,15 +56,31 @@ export class StorageService {
      */
     async loadChatStore(): Promise<ChatStore> {
         try {
+            const filename = this.getDataFilename();
+            
             // Check if the file exists
-            const exists = await this.app.vault.adapter.exists(CHAT_DATA_FILENAME);
+            const exists = await this.app.vault.adapter.exists(filename);
             if (!exists) {
-                // If it doesn't exist, create an empty store
+                // Check the alternate location in case settings changed
+                const altFilename = filename === PLUGIN_DATA_FILENAME 
+                    ? VAULT_DATA_FILENAME 
+                    : PLUGIN_DATA_FILENAME;
+                
+                const altExists = await this.app.vault.adapter.exists(altFilename);
+                
+                if (altExists) {
+                    // If data exists in the alternate location, load from there
+                    console.log(`Data found in alternate location: ${altFilename}`);
+                    const serializedData = await this.app.vault.adapter.read(altFilename);
+                    return JSON.parse(serializedData) as ChatStore;
+                }
+                
+                // If it doesn't exist anywhere, create an empty store
                 return createEmptyChatStore();
             }
             
             // Read and parse the file
-            const serializedData = await this.app.vault.adapter.read(CHAT_DATA_FILENAME);
+            const serializedData = await this.app.vault.adapter.read(filename);
             return JSON.parse(serializedData) as ChatStore;
         } catch (error) {
             console.error('Failed to load chat store:', error);

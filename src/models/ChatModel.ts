@@ -20,6 +20,8 @@ export interface ChatMessage {
 export interface ChatThread {
     rootMessage: ChatMessage;
     replies: ChatMessage[];
+    // New: Add subThreads for recursive threading
+    subThreads?: { [messageId: string]: ChatThread };
 }
 
 // Main data store for all chats
@@ -59,7 +61,7 @@ export function addMessage(store: ChatStore, message: ChatMessage): ChatStore {
 export function getMessagesForPath(store: ChatStore, path: ObsidianPath): ChatMessage[] {
     const pathKey = `${path.type}:${path.path}`;
     const messageIds = store.pathIndex[pathKey] || [];
-    return messageIds.map(id => store.messages[id]);
+    return messageIds.map(id => store.messages[id]).filter(msg => !!msg);
 }
 
 // Function to get a thread (a message and all its replies)
@@ -68,11 +70,72 @@ export function getThread(store: ChatStore, rootMessageId: string): ChatThread |
     if (!rootMessage) return null;
     
     // Find all replies to this message
-    const replies = Object.keys(store.messages)
-        .filter(id => store.messages[id].parentId === rootMessageId)
-        .map(id => store.messages[id]);
+    const replies = Object.values(store.messages)
+        .filter(msg => msg.parentId === rootMessageId)
+        .sort((a, b) => a.timestamp - b.timestamp);
     
-    return { rootMessage, replies };
+    // Build nested sub-threads
+    const subThreads: { [messageId: string]: ChatThread } = {};
+    
+    for (const reply of replies) {
+        const subThread = getThread(store, reply.id);
+        if (subThread && subThread.replies.length > 0) {
+            subThreads[reply.id] = subThread;
+        }
+    }
+    
+    return { 
+        rootMessage, 
+        replies,
+        subThreads: Object.keys(subThreads).length > 0 ? subThreads : undefined
+    };
+}
+
+// Get all threads for a specific path
+export function getThreadsForPath(store: ChatStore, path: ObsidianPath): ChatThread[] {
+    const messages = getMessagesForPath(store, path);
+    
+    // Filter for root messages (those without a parentId)
+    const rootMessages = messages.filter(msg => !msg.parentId);
+    
+    // Build threads
+    return rootMessages
+        .map(rootMsg => getThread(store, rootMsg.id))
+        .filter((thread): thread is ChatThread => thread !== null)
+        .sort((a, b) => a.rootMessage.timestamp - b.rootMessage.timestamp);
+}
+
+// Get all child threads (subfolders and files) for a folder
+export function getChildThreads(store: ChatStore, folderPath: string): {path: ObsidianPath, threads: ChatThread[]}[] {
+    if (!folderPath.endsWith('/')) {
+        folderPath = folderPath + '/';
+    }
+    
+    // Get all paths that start with this folder path
+    const childPaths: ObsidianPath[] = [];
+    
+    for (const pathKey of Object.keys(store.pathIndex)) {
+        const [type, path] = pathKey.split(':');
+        
+        // Skip if it's not a direct child
+        if (!path.startsWith(folderPath)) continue;
+        if (path === folderPath.slice(0, -1)) continue; // Skip the folder itself
+        
+        // Check if it's a direct child (only one level down)
+        const relativePath = path.slice(folderPath.length);
+        if (!relativePath.includes('/')) {
+            childPaths.push({
+                path,
+                type: type as 'folder' | 'file'
+            });
+        }
+    }
+    
+    // Get threads for each child path
+    return childPaths.map(path => ({
+        path,
+        threads: getThreadsForPath(store, path)
+    }));
 }
 
 // Functions to handle path changes (renames, moves)
